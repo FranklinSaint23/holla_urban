@@ -79,6 +79,18 @@
     <button id="reload-btn" onclick="location.reload(true)">Recharger</button>
   </div>
 
+  <!-- Stub for passkeys_web (transitive dep of supabase_flutter).
+       passkeys_web calls window.PasskeyAuthenticator.init() on startup.
+       Without this stub, the app crashes before rendering anything. -->
+  <script>
+    window.PasskeyAuthenticator = {
+      init: function() { return Promise.resolve(); },
+      create: function() { return Promise.reject(new Error('Passkeys not available')); },
+      get: function() { return Promise.reject(new Error('Passkeys not available')); },
+      isSupported: function() { return false; }
+    };
+  </script>
+
   <script>
     function setStatus(msg) {
       var el = document.getElementById('status-msg');
