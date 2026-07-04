@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -38,23 +39,35 @@ import '../../features/admin/screens/admin_analytics_screen.dart';
 import '../../features/admin/screens/admin_settings_screen.dart';
 import '../providers/auth_provider.dart';
 
+// ChangeNotifier used as refreshListenable so GoRouter is NOT recreated on
+// auth changes — only the redirect is re-evaluated.
+class _RouterNotifier extends ChangeNotifier {
+  void refresh() => notifyListeners();
+}
+
 final routerProvider = Provider<GoRouter>((ref) {
-  // Écoute les changements d'auth pour forcer un rebuild du router
-  ref.watch(authStateProvider);
+  final notifier = _RouterNotifier();
+
+  // ref.listen (not ref.watch) so this provider never rebuilds.
+  // Rebuilding would create a new GoRouter and reset navigation to '/'.
+  ref.listen<AsyncValue<AuthState>>(authStateProvider, (_, __) {
+    notifier.refresh();
+  });
+  ref.onDispose(notifier.dispose);
 
   return GoRouter(
     initialLocation: '/',
+    refreshListenable: notifier,
     redirect: (context, state) {
       final session = Supabase.instance.client.auth.currentSession;
       final isAuth = session != null;
       final loc = state.matchedLocation;
 
-      final publicPaths = {'/', '/login', '/register', '/role-selection'};
+      const publicPaths = {'/', '/login', '/register', '/role-selection'};
       final isPublicPage = publicPaths.contains(loc);
 
-      // Non connecté → autoriser les pages publiques uniquement
+      // Non connecté → pages publiques seulement
       if (!isAuth && !isPublicPage) return '/';
-      // Connecté et sur login/landing → laisser role-selection gérer la suite
       return null;
     },
     routes: [
@@ -78,12 +91,12 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(path: '/client/ai-chat',      builder: (_, __) => const AiChatScreen()),
       GoRoute(path: '/client/search',       builder: (_, __) => const SearchScreen()),
-      GoRoute(path: '/client/order',       builder: (_, __) => const OrderScreen()),
-      GoRoute(path: '/client/payment',     builder: (_, s) => PaymentScreen(total: s.extra as int? ?? 0)),
-      GoRoute(path: '/client/chat/:id',    builder: (_, s) => ChatScreen(contactName: s.pathParameters['id'] ?? '')),
+      GoRoute(path: '/client/order',        builder: (_, __) => const OrderScreen()),
+      GoRoute(path: '/client/payment',      builder: (_, s) => PaymentScreen(total: s.extra as int? ?? 0)),
+      GoRoute(path: '/client/chat/:id',     builder: (_, s) => ChatScreen(contactName: s.pathParameters['id'] ?? '')),
       GoRoute(path: '/client/order-details/:id',
               builder: (_, s) => OrderDetailsScreen(orderId: s.pathParameters['id'] ?? '0', isOngoing: s.extra as bool? ?? false)),
-      GoRoute(path: '/client/track/:id',   builder: (_, s) => TrackScreen(orderId: s.pathParameters['id'] ?? '0')),
+      GoRoute(path: '/client/track/:id',    builder: (_, s) => TrackScreen(orderId: s.pathParameters['id'] ?? '0')),
 
       // ── Partenaire ────────────────────────────────────────────
       ShellRoute(
@@ -135,3 +148,22 @@ final routerProvider = Provider<GoRouter>((ref) {
     ],
   );
 });
+
+/// Navigate to the correct dashboard based on user role.
+/// Call this after successful login / registration.
+void navigateByRole(BuildContext context, String? role) {
+  switch (role) {
+    case 'client':
+      context.go('/client/home');
+    case 'partner':
+      context.go('/partner/home');
+    case 'delivery':
+      context.go('/delivery/home');
+    case 'provider':
+      context.go('/provider/home');
+    case 'admin':
+      context.go('/admin/home');
+    default:
+      context.go('/role-selection');
+  }
+}

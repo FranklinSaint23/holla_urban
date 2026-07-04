@@ -4,6 +4,8 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/l10n/app_localizations.dart';
 import '../../../core/services/auth_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../../core/router/app_router.dart';
 import '../../../core/widgets/holla_background.dart';
 import '../../../core/widgets/holla_button.dart';
 import '../widgets/auth_widgets.dart';
@@ -33,9 +35,10 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() { _loading = true; _error = null; });
     try {
       await AuthService.signIn(_emailCtrl.text.trim(), _passCtrl.text);
-      if (mounted) context.go('/client/home');
+      if (!mounted) return;
+      await _redirectByRole();
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -45,11 +48,27 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() { _loading = true; _error = null; });
     try {
       await fn();
-      if (mounted) context.go('/client/home');
+      if (!mounted) return;
+      await _redirectByRole();
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _redirectByRole() async {
+    final uid = Supabase.instance.client.auth.currentUser?.id;
+    if (uid == null || !mounted) { context.go('/role-selection'); return; }
+    try {
+      final row = await Supabase.instance.client
+          .from('profiles')
+          .select('role')
+          .eq('id', uid)
+          .maybeSingle();
+      if (mounted) navigateByRole(context, row?['role'] as String?);
+    } catch (_) {
+      if (mounted) context.go('/role-selection');
     }
   }
 
