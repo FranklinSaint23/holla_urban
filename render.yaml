@@ -8,7 +8,7 @@ services:
       export PATH="$PATH:$(pwd)/flutter/bin"
       flutter config --no-analytics
       flutter pub get
-      flutter build web --release --web-renderer canvaskit
+      flutter build web --release
     staticPublishPath: build/web
     headers:
       - path: /*
