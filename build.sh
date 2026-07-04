@@ -18,6 +18,6 @@ flutter --version
 
 flutter config --no-analytics
 flutter pub get
-flutter build web --release
+flutter build web --release --pwa-strategy=none
 
 echo "==> Build complete. Output in build/web/"
