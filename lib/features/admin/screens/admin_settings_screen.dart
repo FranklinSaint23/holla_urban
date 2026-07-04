@@ -151,7 +151,14 @@ class _ToggleTileState extends State<_ToggleTile> {
     return ListTile(
       leading: Icon(widget.icon, color: _val ? _kAdminColor : AppColors.grey, size: 20),
       title: Text(widget.label, style: GoogleFonts.poppins(fontSize: 13)),
-      trailing: Switch(value: _val, onChanged: (v) => setState(() => _val = v), activeThumbColor: _kAdminColor, activeTrackColor: _kAdminColor.withValues(alpha: 0.4)),
+      trailing: Switch(
+        value: _val,
+        onChanged: (v) => setState(() => _val = v),
+        thumbColor: WidgetStateProperty.resolveWith((s) =>
+            s.contains(WidgetState.selected) ? _kAdminColor : null),
+        trackColor: WidgetStateProperty.resolveWith((s) =>
+            s.contains(WidgetState.selected) ? _kAdminColor.withValues(alpha: 0.4) : null),
+      ),
     );
   }
 }
