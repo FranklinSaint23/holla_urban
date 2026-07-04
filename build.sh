@@ -20,4 +20,9 @@ flutter config --no-analytics
 flutter pub get
 flutter build web --release --pwa-strategy=none
 
+# Patch flutter_bootstrap.js to use self-hosted CanvasKit (avoids gstatic.com CDN download)
+# Without this, Flutter tries to fetch ~7MB WASM from CDN at startup, causing infinite spinner
+echo "==> Patching flutter_bootstrap.js to use local CanvasKit..."
+sed -i 's/"engineRevision":/"useLocalCanvasKit":true,"engineRevision":/' build/web/flutter_bootstrap.js
+
 echo "==> Build complete. Output in build/web/"
