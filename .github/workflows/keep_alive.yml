@@ -12,7 +12,7 @@ jobs:
       - name: Ping Holla Urban on Render
         run: |
           echo "Pinging Holla Urban..."
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.RENDER_WEB_URL }}" --max-time 30)
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://holla-urban.onrender.com" --max-time 30)
           echo "HTTP Status: $STATUS"
           if [ "$STATUS" != "200" ]; then
             echo "Warning: service returned HTTP $STATUS"
