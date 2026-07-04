@@ -3,7 +3,7 @@ services:
     name: holla-urban-web
     env: static
     buildCommand: |
-      wget -q https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.32.2-stable.tar.xz -O flutter.tar.xz
+      wget -q https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.41.0-stable.tar.xz -O flutter.tar.xz
       tar xf flutter.tar.xz
       export PATH="$PATH:$(pwd)/flutter/bin"
       flutter config --no-analytics
