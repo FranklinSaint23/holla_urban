@@ -91,9 +91,21 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(path: '/client/ai-chat',      builder: (_, __) => const AiChatScreen()),
       GoRoute(path: '/client/search',       builder: (_, __) => const SearchScreen()),
-      GoRoute(path: '/client/order',        builder: (_, __) => const OrderScreen()),
-      GoRoute(path: '/client/payment',      builder: (_, s) => PaymentScreen(total: s.extra as int? ?? 0)),
-      GoRoute(path: '/client/chat/:id',     builder: (_, s) => ChatScreen(contactName: s.pathParameters['id'] ?? '')),
+      GoRoute(path: '/client/order',        builder: (_, s) => OrderScreen(partnerId: s.extra as String?)),
+      GoRoute(path: '/client/payment',      builder: (_, s) {
+        final extra = s.extra;
+        if (extra is Map<String, dynamic>) {
+          return PaymentScreen(
+            total: (extra['total'] as num?)?.toInt() ?? 0,
+            orderId: extra['orderId'] as String?,
+          );
+        }
+        return PaymentScreen(total: extra as int? ?? 0);
+      }),
+      GoRoute(path: '/client/chat/:id',     builder: (_, s) => ChatScreen(
+        contactId: s.pathParameters['id'] ?? '',
+        contactName: (s.extra as String?) ?? s.pathParameters['id'] ?? '',
+      )),
       GoRoute(path: '/client/order-details/:id',
               builder: (_, s) => OrderDetailsScreen(orderId: s.pathParameters['id'] ?? '0', isOngoing: s.extra as bool? ?? false)),
       GoRoute(path: '/client/track/:id',    builder: (_, s) => TrackScreen(orderId: s.pathParameters['id'] ?? '0')),

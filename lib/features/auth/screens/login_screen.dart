@@ -57,6 +57,36 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  Future<void> _forgotPassword() async {
+    final email = _emailCtrl.text.trim();
+    if (email.isEmpty) {
+      setState(() => _error = 'Saisissez votre email pour réinitialiser le mot de passe.');
+      return;
+    }
+    setState(() { _loading = true; _error = null; });
+    try {
+      await Supabase.instance.client.auth.resetPasswordForEmail(email);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Email envoyé à $email. Vérifiez votre boîte de réception.',
+              style: GoogleFonts.poppins(fontSize: 13),
+            ),
+            backgroundColor: AppColors.success,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            margin: const EdgeInsets.all(16),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
   Future<void> _redirectByRole() async {
     final uid = Supabase.instance.client.auth.currentUser?.id;
     if (uid == null || !mounted) { context.go('/role-selection'); return; }
@@ -213,7 +243,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       Align(
                         alignment: Alignment.centerRight,
                         child: TextButton(
-                          onPressed: () {},
+                          onPressed: _forgotPassword,
                           child: Text(l.forgotPassword,
                               style: GoogleFonts.poppins(
                                   fontSize: 13, color: AppColors.primary)),

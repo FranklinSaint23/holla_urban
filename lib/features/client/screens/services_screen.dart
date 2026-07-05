@@ -368,7 +368,10 @@ class _ProviderCard extends StatelessWidget {
             children: [
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: () => context.push('/provider/home'),
+                  onPressed: () => context.push(
+                    '/client/chat/${provider['id']}',
+                    extra: _name,
+                  ),
                   icon: const Icon(Icons.chat_bubble_outline_rounded,
                       size: 14, color: AppColors.primary),
                   label: Text('Contacter',
@@ -385,7 +388,10 @@ class _ProviderCard extends StatelessWidget {
               const SizedBox(width: 10),
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: () => context.push('/client/order'),
+                  onPressed: () => context.push(
+                    '/client/chat/${provider['id']}',
+                    extra: _name,
+                  ),
                   icon: const Icon(Icons.add_circle_outline_rounded,
                       size: 14, color: Colors.white),
                   label: Text('Demander',

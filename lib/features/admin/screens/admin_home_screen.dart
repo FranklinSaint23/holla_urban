@@ -264,18 +264,99 @@ class _QuickCard extends StatelessWidget {
   }
 }
 
-class _RecentActivity extends StatelessWidget {
+class _RecentActivity extends StatefulWidget {
+  @override
+  State<_RecentActivity> createState() => _RecentActivityState();
+}
+
+class _RecentActivityState extends State<_RecentActivity> {
+  final _client = Supabase.instance.client;
+  List<Map<String, dynamic>> _events = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final orders = await _client
+          .from('orders')
+          .select('id, order_number, status, created_at, profiles!orders_client_id_fkey(full_name)')
+          .order('created_at', ascending: false)
+          .limit(8) as List;
+
+      if (mounted) {
+        setState(() {
+          _events = List<Map<String, dynamic>>.from(orders);
+          _loading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  String _relTime(String? iso) {
+    if (iso == null) return '';
+    final dt = DateTime.tryParse(iso)?.toLocal();
+    if (dt == null) return '';
+    final diff = DateTime.now().difference(dt);
+    if (diff.inSeconds < 60) return 'à l\'instant';
+    if (diff.inMinutes < 60) return 'il y a ${diff.inMinutes} min';
+    if (diff.inHours < 24) return 'il y a ${diff.inHours} h';
+    return 'il y a ${diff.inDays} j';
+  }
+
+  (IconData, String, Color) _eventInfo(String? status) {
+    switch (status) {
+      case 'pending':
+        return (Icons.receipt_long_rounded, 'Nouvelle commande', AppColors.primary);
+      case 'confirmed':
+        return (Icons.check_circle_rounded, 'Commande confirmée', const Color(0xFF43A047));
+      case 'preparing':
+        return (Icons.restaurant_rounded, 'Commande en préparation', AppColors.warning);
+      case 'on_the_way':
+        return (Icons.delivery_dining_rounded, 'Commande en livraison', AppColors.secondary);
+      case 'delivered':
+        return (Icons.local_shipping_rounded, 'Commande livrée', const Color(0xFF43A047));
+      case 'cancelled':
+        return (Icons.cancel_rounded, 'Commande annulée', _kAdminColor);
+      default:
+        return (Icons.receipt_long_rounded, 'Activité commande', AppColors.grey);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    final events = [
-      (Icons.person_add_rounded,       'Nouveau compte client inscrit',     '2 min',  const Color(0xFF5C6BC0)),
-      (Icons.receipt_long_rounded,     'Commande #1042 validée',            '8 min',  AppColors.primary),
-      (Icons.delivery_dining_rounded,  'Livraison #0983 terminée',          '15 min', AppColors.secondary),
-      (Icons.payment_rounded,          'Paiement MTN 5 000 FCFA reçu',      '23 min', const Color(0xFF43A047)),
-      (Icons.warning_amber_rounded,    'Litige commande #1038 signalé',     '1h',     _kAdminColor),
-    ];
+    if (_loading) {
+      return Container(
+        height: 120,
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF1C1C2A) : Colors.white,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: const Center(child: CircularProgressIndicator(color: _kAdminColor)),
+      );
+    }
+
+    if (_events.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF1C1C2A) : Colors.white,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Center(
+          child: Text('Aucune activité récente',
+              style: GoogleFonts.poppins(fontSize: 13, color: AppColors.grey)),
+        ),
+      );
+    }
 
     return Container(
       decoration: BoxDecoration(
@@ -284,22 +365,39 @@ class _RecentActivity extends StatelessWidget {
         boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 12, offset: const Offset(0, 4))],
       ),
       child: Column(
-        children: events.asMap().entries.map((e) {
+        children: _events.asMap().entries.map((e) {
           final i = e.key;
           final ev = e.value;
+          final status = ev['status'] as String?;
+          final orderNum = ev['order_number'] as String? ??
+              (ev['id'] as String).substring(0, 8).toUpperCase();
+          final profile = ev['profiles'] as Map?;
+          final clientName = profile?['full_name'] as String? ?? 'Client';
+          final info = _eventInfo(status);
+          final relTime = _relTime(ev['created_at'] as String?);
+
           return Column(
             children: [
               ListTile(
                 leading: Container(
                   padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(color: ev.$4.withValues(alpha: 0.12), shape: BoxShape.circle),
-                  child: Icon(ev.$1, color: ev.$4, size: 18),
+                  decoration: BoxDecoration(
+                      color: info.$3.withValues(alpha: 0.12),
+                      shape: BoxShape.circle),
+                  child: Icon(info.$1, color: info.$3, size: 18),
                 ),
-                title: Text(ev.$2, style: GoogleFonts.poppins(fontSize: 13, fontWeight: FontWeight.w500)),
-                trailing: Text('il y a ${ev.$3}',
-                    style: GoogleFonts.poppins(fontSize: 11, color: AppColors.grey)),
+                title: Text('${info.$2} #$orderNum',
+                    style: GoogleFonts.poppins(
+                        fontSize: 13, fontWeight: FontWeight.w500)),
+                subtitle: Text(clientName,
+                    style: GoogleFonts.poppins(
+                        fontSize: 11, color: AppColors.grey)),
+                trailing: Text(relTime,
+                    style: GoogleFonts.poppins(
+                        fontSize: 11, color: AppColors.grey)),
               ),
-              if (i < events.length - 1) const Divider(height: 1, indent: 60),
+              if (i < _events.length - 1)
+                const Divider(height: 1, indent: 60),
             ],
           );
         }).toList(),

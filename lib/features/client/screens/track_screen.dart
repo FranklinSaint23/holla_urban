@@ -5,6 +5,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/l10n/app_localizations.dart';
 import '../../../core/theme/app_theme.dart';
@@ -20,31 +21,41 @@ class TrackScreen extends StatefulWidget {
 
 class _TrackScreenState extends State<TrackScreen>
     with SingleTickerProviderStateMixin {
+  final _client = Supabase.instance.client;
   late AnimationController _pulse;
   late Animation<double> _pulseAnim;
   final Completer<GoogleMapController> _mapController = Completer();
 
-  // Yaoundé — coordonnées par défaut (fallback si GPS indisponible)
-  static const LatLng _restaurant = LatLng(3.8620, 11.5200);
+  // Yaoundé defaults
   static const LatLng _defaultClient = LatLng(3.8750, 11.5100);
   static const LatLng _defaultLivreur = LatLng(3.8680, 11.5150);
 
-  // Variables d'état remplaçant les static const
   late LatLng _clientPos;
   late LatLng _livreurPos;
 
+  // Real order data
+  Map<String, dynamic>? _order;
+  String? _delivererId;
+  String _delivererName = 'Livreur';
+  double _delivererRating = 0.0;
+
+  int _currentStep = 0;
+
+  StreamSubscription<List<Map<String, dynamic>>>? _orderSub;
+  StreamSubscription<List<Map<String, dynamic>>>? _posSub;
   Timer? _movementTimer;
   int _movementStep = 0;
-  static const int _totalSteps = 20; // ~60 secondes à 3s/pas
+  static const int _totalSteps = 20;
+
+  static const _statusIndex = {
+    'pending': 0,
+    'confirmed': 1,
+    'preparing': 2,
+    'on_the_way': 3,
+    'delivered': 4,
+  };
 
   Set<Marker> get _markers => {
-        Marker(
-          markerId: const MarkerId('restaurant'),
-          position: _restaurant,
-          icon: BitmapDescriptor.defaultMarkerWithHue(
-              BitmapDescriptor.hueViolet),
-          infoWindow: const InfoWindow(title: 'Pizzeria La Casa'),
-        ),
         Marker(
           markerId: const MarkerId('client'),
           position: _clientPos,
@@ -57,28 +68,23 @@ class _TrackScreenState extends State<TrackScreen>
           position: _livreurPos,
           icon: BitmapDescriptor.defaultMarkerWithHue(
               BitmapDescriptor.hueCyan),
-          infoWindow: const InfoWindow(title: 'Jean-Baptiste K.'),
+          infoWindow: InfoWindow(title: _delivererName),
         ),
       };
 
   Set<Polyline> get _polylines => {
         Polyline(
           polylineId: const PolylineId('route'),
-          points: [_restaurant, _livreurPos, _clientPos],
+          points: [_livreurPos, _clientPos],
           color: AppColors.primary,
           width: 4,
           patterns: [PatternItem.dash(20), PatternItem.gap(10)],
         ),
       };
 
-  // Current step index (0-4). Step 3 = "En route".
-  final int _currentStep = 3;
-
   @override
   void initState() {
     super.initState();
-
-    // Initialisation avec coordonnées par défaut
     _clientPos = _defaultClient;
     _livreurPos = _defaultLivreur;
 
@@ -86,105 +92,179 @@ class _TrackScreenState extends State<TrackScreen>
       vsync: this,
       duration: const Duration(milliseconds: 1000),
     )..repeat(reverse: true);
-    _pulseAnim = Tween<double>(begin: 0.6, end: 1.0).animate(
+    _pulseAnim =
+        Tween<double>(begin: 0.6, end: 1.0).animate(
       CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
     );
 
-    // Charger la vraie position GPS du client
+    _loadOrderAndSubscribe();
     _initGps();
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    _orderSub?.cancel();
+    _posSub?.cancel();
+    _movementTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadOrderAndSubscribe() async {
+    try {
+      final data = await _client
+          .from('orders')
+          .select(
+              '*, profiles!orders_client_id_fkey(full_name),'
+              'delivery_agents:delivery_agent_id(id, profiles(full_name, phone), rating)')
+          .eq('id', widget.orderId)
+          .maybeSingle();
+
+      if (data != null && mounted) {
+        _applyOrderData(Map<String, dynamic>.from(data as Map));
+      }
+    } catch (_) {
+    } finally {
+      if (mounted) setState(() {});
+    }
+
+    // Subscribe to order status changes
+    _orderSub = _client
+        .from('orders')
+        .stream(primaryKey: ['id'])
+        .eq('id', widget.orderId)
+        .listen((rows) {
+      if (rows.isNotEmpty && mounted) {
+        _applyOrderData(rows.first);
+      }
+    });
+  }
+
+  void _applyOrderData(Map<String, dynamic> data) {
+    final status = data['status'] as String? ?? 'pending';
+    final stepIdx = _statusIndex[status] ?? 0;
+
+    final agentRaw = data['delivery_agents'];
+    String delivererName = 'Livreur';
+    double delivererRating = 0.0;
+    String? delivererId;
+
+    if (agentRaw is Map) {
+      delivererId = agentRaw['id'] as String?;
+      delivererRating =
+          (agentRaw['rating'] as num?)?.toDouble() ?? 0.0;
+      final profile = agentRaw['profiles'] as Map?;
+      delivererName =
+          profile?['full_name'] as String? ?? 'Livreur';
+    }
+
+    setState(() {
+      _order = data;
+      _currentStep = stepIdx;
+      _delivererName = delivererName;
+      _delivererRating = delivererRating;
+      _delivererId = delivererId;
+    });
+
+    // Subscribe to delivery agent position if available
+    if (delivererId != null && _posSub == null) {
+      _subscribeDelivererPosition(delivererId);
+    }
+  }
+
+  void _subscribeDelivererPosition(String agentId) {
+    _posSub = _client
+        .from('delivery_positions')
+        .stream(primaryKey: ['delivery_agent_id'])
+        .eq('delivery_agent_id', agentId)
+        .listen((rows) {
+      if (rows.isNotEmpty && mounted) {
+        final row = rows.first;
+        final lat = (row['latitude'] as num?)?.toDouble();
+        final lng = (row['longitude'] as num?)?.toDouble();
+        if (lat != null && lng != null) {
+          setState(() => _livreurPos = LatLng(lat, lng));
+          _mapController.future.then((ctrl) {
+            ctrl.animateCamera(CameraUpdate.newCameraPosition(
+              CameraPosition(target: _livreurPos, zoom: 14.5),
+            ));
+          });
+        }
+      }
+    });
   }
 
   Future<void> _initGps() async {
     try {
-      // Vérifier si le service est activé
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      final serviceEnabled =
+          await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        _startLivreurSimulation();
+        _startSimulation();
         return;
       }
 
-      // Vérifier/demander la permission
-      LocationPermission permission = await Geolocator.checkPermission();
+      LocationPermission permission =
+          await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
       }
-
       if (permission == LocationPermission.denied ||
           permission == LocationPermission.deniedForever) {
-        // Permission refusée → on garde les coordonnées Yaoundé par défaut
-        _startLivreurSimulation();
+        _startSimulation();
         return;
       }
 
-      // Obtenir la position réelle
       final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
+          desiredAccuracy: LocationAccuracy.high);
 
       if (mounted) {
         setState(() {
-          _clientPos = LatLng(position.latitude, position.longitude);
-          // Positionner le livreur à ~500m du client (simulation)
-          _livreurPos = LatLng(
-            position.latitude - 0.004,
-            position.longitude + 0.003,
-          );
+          _clientPos =
+              LatLng(position.latitude, position.longitude);
+          if (_posSub == null) {
+            // No real deliverer position; start simulation
+            _livreurPos = LatLng(
+              position.latitude - 0.004,
+              position.longitude + 0.003,
+            );
+          }
         });
-
-        // Animer la caméra vers la vraie position
-        _mapController.future.then((controller) {
-          controller.animateCamera(
-            CameraUpdate.newCameraPosition(
-              CameraPosition(target: _clientPos, zoom: 14.5),
-            ),
-          );
+        _mapController.future.then((ctrl) {
+          ctrl.animateCamera(CameraUpdate.newCameraPosition(
+            CameraPosition(target: _clientPos, zoom: 14.5),
+          ));
         });
       }
     } catch (_) {
-      // En cas d'erreur, on conserve les coordonnées Yaoundé par défaut
     } finally {
-      _startLivreurSimulation();
+      if (_posSub == null) _startSimulation();
     }
   }
 
-  /// Simule le déplacement du livreur vers le client (interpolation linéaire)
-  void _startLivreurSimulation() {
-    _movementTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
-      if (_movementStep >= _totalSteps) {
-        timer.cancel();
-        return;
-      }
+  void _startSimulation() {
+    _movementTimer =
+        Timer.periodic(const Duration(seconds: 3), (timer) {
+      if (!mounted) { timer.cancel(); return; }
+      if (_posSub != null) { timer.cancel(); return; }
+      if (_movementStep >= _totalSteps) { timer.cancel(); return; }
 
       _movementStep++;
       final t = _movementStep / _totalSteps;
-
-      // Interpolation linéaire entre la position courante du livreur et le client
-      final startLat = _defaultLivreur.latitude;
-      final startLng = _defaultLivreur.longitude;
-      final endLat = _clientPos.latitude;
-      final endLng = _clientPos.longitude;
-
-      // Légère oscillation pour rendre le mouvement naturel
       final noise = math.sin(_movementStep * 0.8) * 0.0002;
 
       setState(() {
         _livreurPos = LatLng(
-          _lerp(startLat, endLat, t) + noise,
-          _lerp(startLng, endLng, t) + noise,
+          _lerp(_defaultLivreur.latitude, _clientPos.latitude, t) +
+              noise,
+          _lerp(_defaultLivreur.longitude, _clientPos.longitude,
+              t) + noise,
         );
       });
 
-      // Animer la caméra pour suivre le livreur
-      _mapController.future.then((controller) {
-        controller.animateCamera(
-          CameraUpdate.newCameraPosition(
-            CameraPosition(target: _livreurPos, zoom: 14.5),
-          ),
-        );
+      _mapController.future.then((ctrl) {
+        ctrl.animateCamera(CameraUpdate.newCameraPosition(
+          CameraPosition(target: _livreurPos, zoom: 14.5),
+        ));
       });
     });
   }
@@ -192,21 +272,19 @@ class _TrackScreenState extends State<TrackScreen>
   double _lerp(double a, double b, double t) => a + (b - a) * t;
 
   @override
-  void dispose() {
-    _pulse.dispose();
-    _movementTimer?.cancel();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
+    final shortId = widget.orderId.length >= 8
+        ? widget.orderId.substring(0, 8).toUpperCase()
+        : widget.orderId;
 
     final steps = [
-      (l.trackStepOrdered, '10:30'),
-      (l.trackStepConfirmed, '10:32'),
-      (l.trackStepPreparing, '10:35'),
-      (l.trackStepOnTheWay, '10:48'),
+      (l.trackStepOrdered, _order?['created_at'] != null
+          ? _fmtTime(_order!['created_at'] as String)
+          : '--:--'),
+      (l.trackStepConfirmed, '--:--'),
+      (l.trackStepPreparing, '--:--'),
+      (l.trackStepOnTheWay, '--:--'),
       (l.trackStepDelivered, '--:--'),
     ];
 
@@ -215,7 +293,7 @@ class _TrackScreenState extends State<TrackScreen>
         child: SafeArea(
           child: Column(
             children: [
-              // ── Header ─────────────────────────────────────────────
+              // ── Header ────────────────────────────────────────────
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
                 child: Row(
@@ -229,7 +307,8 @@ class _TrackScreenState extends State<TrackScreen>
                           color: context.cardBg,
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: const Icon(Icons.arrow_back_ios_new_rounded,
+                        child: const Icon(
+                            Icons.arrow_back_ios_new_rounded,
                             size: 18),
                       ),
                     ),
@@ -244,10 +323,11 @@ class _TrackScreenState extends State<TrackScreen>
                       padding: const EdgeInsets.symmetric(
                           horizontal: 12, vertical: 5),
                       decoration: BoxDecoration(
-                        color: AppColors.primary.withValues(alpha: 0.12),
+                        color: AppColors.primary
+                            .withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(20),
                       ),
-                      child: Text('#${widget.orderId}',
+                      child: Text('#$shortId',
                           style: GoogleFonts.poppins(
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
@@ -260,10 +340,11 @@ class _TrackScreenState extends State<TrackScreen>
 
               Expanded(
                 child: SingleChildScrollView(
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 20),
                   child: Column(
                     children: [
-                      // ── ETA Banner ──────────────────────────────────
+                      // ── ETA banner ────────────────────────────
                       Container(
                         width: double.infinity,
                         padding: const EdgeInsets.all(18),
@@ -286,7 +367,8 @@ class _TrackScreenState extends State<TrackScreen>
                                     shape: BoxShape.circle,
                                   ),
                                   child: const Icon(
-                                      Icons.delivery_dining_rounded,
+                                      Icons
+                                          .delivery_dining_rounded,
                                       color: Colors.white,
                                       size: 26),
                                 ),
@@ -294,49 +376,43 @@ class _TrackScreenState extends State<TrackScreen>
                             ),
                             const SizedBox(width: 14),
                             Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                              crossAxisAlignment:
+                                  CrossAxisAlignment.start,
                               children: [
                                 Text(l.estimatedArrival,
                                     style: GoogleFonts.poppins(
                                         fontSize: 12,
                                         color: Colors.white
-                                            .withValues(alpha: 0.8))),
-                                Text('12 min',
-                                    style: GoogleFonts.poppins(
-                                        fontSize: 28,
-                                        fontWeight: FontWeight.w800,
-                                        color: Colors.white)),
+                                            .withValues(
+                                                alpha: 0.8))),
+                                Text(
+                                  _currentStep >= 3
+                                      ? 'En route'
+                                      : 'En attente',
+                                  style: GoogleFonts.poppins(
+                                      fontSize: 22,
+                                      fontWeight: FontWeight.w800,
+                                      color: Colors.white),
+                                ),
                               ],
                             ),
                             const Spacer(),
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                const Icon(Icons.location_on_rounded,
-                                    color: Colors.white, size: 16),
-                                Text('2.3 km',
-                                    style: GoogleFonts.poppins(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w700,
-                                        color: Colors.white)),
-                                Text(l.fromYou,
-                                    style: GoogleFonts.poppins(
-                                        fontSize: 11,
-                                        color: Colors.white
-                                            .withValues(alpha: 0.8))),
-                              ],
-                            ),
+                            const Icon(
+                                Icons.location_on_rounded,
+                                color: Colors.white,
+                                size: 16),
                           ],
                         ),
                       ),
                       const SizedBox(height: 18),
 
-                      // ── Google Map ──────────────────────────────────
+                      // ── Google Map ────────────────────────────
                       Container(
                         height: 220,
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: context.borderColor),
+                          border:
+                              Border.all(color: context.borderColor),
                         ),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(16),
@@ -358,7 +434,7 @@ class _TrackScreenState extends State<TrackScreen>
                       ),
                       const SizedBox(height: 18),
 
-                      // ── Progress Steps ──────────────────────────────
+                      // ── Progress steps ────────────────────────
                       Container(
                         padding: const EdgeInsets.all(18),
                         decoration: BoxDecoration(
@@ -366,13 +442,14 @@ class _TrackScreenState extends State<TrackScreen>
                           borderRadius: BorderRadius.circular(16),
                           boxShadow: [
                             BoxShadow(
-                                color:
-                                    Colors.black.withValues(alpha: 0.04),
+                                color: Colors.black
+                                    .withValues(alpha: 0.04),
                                 blurRadius: 8)
                           ],
                         ),
                         child: Column(
-                          children: List.generate(steps.length, (i) {
+                          children:
+                              List.generate(steps.length, (i) {
                             final done = i < _currentStep;
                             final active = i == _currentStep;
                             final pending = i > _currentStep;
@@ -383,14 +460,15 @@ class _TrackScreenState extends State<TrackScreen>
                               isActive: active,
                               isPending: pending,
                               isLast: i == steps.length - 1,
-                              pulseAnim: active ? _pulseAnim : null,
+                              pulseAnim:
+                                  active ? _pulseAnim : null,
                             );
                           }),
                         ),
                       ),
                       const SizedBox(height: 18),
 
-                      // ── Livreur Card ────────────────────────────────
+                      // ── Deliverer card ────────────────────────
                       Container(
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
@@ -398,13 +476,14 @@ class _TrackScreenState extends State<TrackScreen>
                           borderRadius: BorderRadius.circular(16),
                           boxShadow: [
                             BoxShadow(
-                                color:
-                                    Colors.black.withValues(alpha: 0.04),
+                                color: Colors.black
+                                    .withValues(alpha: 0.04),
                                 blurRadius: 8)
                           ],
                         ),
                         child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                          crossAxisAlignment:
+                              CrossAxisAlignment.start,
                           children: [
                             Text(l.yourDeliverer,
                                 style: GoogleFonts.poppins(
@@ -417,34 +496,21 @@ class _TrackScreenState extends State<TrackScreen>
                             const SizedBox(height: 12),
                             Row(
                               children: [
-                                Stack(
-                                  children: [
-                                    CircleAvatar(
-                                      radius: 26,
-                                      backgroundColor:
-                                          AppColors.primaryLight,
-                                      child: Text('J',
-                                          style: GoogleFonts.poppins(
-                                              fontSize: 20,
-                                              fontWeight: FontWeight.w700,
-                                              color: AppColors.primary)),
-                                    ),
-                                    Positioned(
-                                      right: 0,
-                                      bottom: 0,
-                                      child: Container(
-                                        width: 12,
-                                        height: 12,
-                                        decoration: BoxDecoration(
-                                          color: AppColors.success,
-                                          shape: BoxShape.circle,
-                                          border: Border.all(
-                                              color: context.cardBg,
-                                              width: 2),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
+                                CircleAvatar(
+                                  radius: 26,
+                                  backgroundColor:
+                                      AppColors.primaryLight,
+                                  child: Text(
+                                      _delivererName.isNotEmpty
+                                          ? _delivererName[0]
+                                              .toUpperCase()
+                                          : 'L',
+                                      style: GoogleFonts.poppins(
+                                          fontSize: 20,
+                                          fontWeight:
+                                              FontWeight.w700,
+                                          color:
+                                              AppColors.primary)),
                                 ),
                                 const SizedBox(width: 12),
                                 Expanded(
@@ -452,24 +518,32 @@ class _TrackScreenState extends State<TrackScreen>
                                     crossAxisAlignment:
                                         CrossAxisAlignment.start,
                                     children: [
-                                      Text('Jean-Baptiste K.',
-                                          style: GoogleFonts.poppins(
-                                              fontWeight: FontWeight.w600,
-                                              fontSize: 14,
-                                              color: Theme.of(context)
-                                                  .textTheme
-                                                  .titleSmall
-                                                  ?.color)),
+                                      Text(_delivererName,
+                                          style:
+                                              GoogleFonts.poppins(
+                                                  fontWeight:
+                                                      FontWeight.w600,
+                                                  fontSize: 14,
+                                                  color: Theme.of(context)
+                                                      .textTheme
+                                                      .titleSmall
+                                                      ?.color)),
                                       Row(
                                         children: [
-                                          const Icon(Icons.star_rounded,
-                                              color: AppColors.warning,
+                                          const Icon(
+                                              Icons.star_rounded,
+                                              color:
+                                                  AppColors.warning,
                                               size: 14),
-                                          Text(' 4.8 · Moto · CM-123-XY',
-                                              style: GoogleFonts.poppins(
-                                                  fontSize: 12,
-                                                  color: context
-                                                      .subtextColor)),
+                                          Text(
+                                              _delivererRating > 0
+                                                  ? ' ${_delivererRating.toStringAsFixed(1)} · Moto'
+                                                  : ' — · Moto',
+                                              style: GoogleFonts
+                                                  .poppins(
+                                                      fontSize: 12,
+                                                      color: context
+                                                          .subtextColor)),
                                         ],
                                       ),
                                     ],
@@ -484,10 +558,17 @@ class _TrackScreenState extends State<TrackScreen>
                                     ),
                                     const SizedBox(width: 8),
                                     _ActionBtn(
-                                      icon: Icons.chat_bubble_rounded,
+                                      icon: Icons
+                                          .chat_bubble_rounded,
                                       color: AppColors.primary,
-                                      onTap: () => context.push(
-                                          '/client/chat/Jean-Baptiste'),
+                                      onTap: () {
+                                        if (_delivererId != null) {
+                                          context.push(
+                                            '/client/chat/$_delivererId',
+                                            extra: _delivererName,
+                                          );
+                                        }
+                                      },
                                     ),
                                   ],
                                 ),
@@ -507,9 +588,15 @@ class _TrackScreenState extends State<TrackScreen>
       ),
     );
   }
+
+  String _fmtTime(String iso) {
+    final dt = DateTime.tryParse(iso)?.toLocal();
+    if (dt == null) return '--:--';
+    return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  }
 }
 
-// ── Supporting widgets ────────────────────────────────────────────────
+// ── Supporting widgets ─────────────────────────────────────────────────────────
 
 class _StepRow extends StatelessWidget {
   final String label, time;
@@ -531,7 +618,6 @@ class _StepRow extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Timeline dot + line
         SizedBox(
           width: 28,
           child: Column(
@@ -590,9 +676,7 @@ class _StepRow extends StatelessWidget {
         width: 24,
         height: 24,
         decoration: const BoxDecoration(
-          color: AppColors.primary,
-          shape: BoxShape.circle,
-        ),
+            color: AppColors.primary, shape: BoxShape.circle),
         child: const Icon(Icons.check_rounded,
             color: Colors.white, size: 14),
       );
@@ -616,11 +700,12 @@ class _StepRow extends StatelessWidget {
               width: 24,
               height: 24,
               decoration: const BoxDecoration(
-                color: AppColors.primary,
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.radio_button_checked_rounded,
-                  color: Colors.white, size: 14),
+                  color: AppColors.primary,
+                  shape: BoxShape.circle),
+              child: const Icon(
+                  Icons.radio_button_checked_rounded,
+                  color: Colors.white,
+                  size: 14),
             ),
           ],
         ),
@@ -643,7 +728,9 @@ class _ActionBtn extends StatelessWidget {
   final Color color;
   final VoidCallback onTap;
   const _ActionBtn(
-      {required this.icon, required this.color, required this.onTap});
+      {required this.icon,
+      required this.color,
+      required this.onTap});
 
   @override
   Widget build(BuildContext context) {

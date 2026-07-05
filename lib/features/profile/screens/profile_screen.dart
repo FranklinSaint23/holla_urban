@@ -384,7 +384,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                       SizedBox(
                         width: double.infinity,
                         child: OutlinedButton.icon(
-                          onPressed: () => context.go('/login'),
+                          onPressed: () async {
+                            await Supabase.instance.client.auth.signOut();
+                            if (context.mounted) context.go('/');
+                          },
                           icon: const Icon(Icons.logout_rounded,
                               color: AppColors.error),
                           label: Text(l.logout,
